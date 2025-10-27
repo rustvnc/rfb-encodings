@@ -140,6 +140,23 @@ Enable features in your `Cargo.toml`:
 rfb-encodings = { version = "0.1", features = ["turbojpeg", "debug-logging"] }
 ```
 
+### TurboJPEG Installation
+
+The `turbojpeg` feature requires libjpeg-turbo to be installed on your system:
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get install libturbojpeg0-dev
+```
+
+**macOS:**
+```bash
+brew install jpeg-turbo
+```
+
+**Windows:**
+Download from [libjpeg-turbo.org](https://libjpeg-turbo.org/)
+
 ## Architecture
 
 This crate is designed to be reusable across different VNC implementations:
@@ -149,9 +166,21 @@ This crate is designed to be reusable across different VNC implementations:
 - **`translate`** - Pixel format translation between different color depths
 - **`TightStreamCompressor`** trait - Interface for persistent zlib streams
 
+## Third-Party Dependencies
+
+### Optional: libjpeg-turbo (TurboJPEG)
+
+When using the `turbojpeg` feature, this crate provides FFI bindings to libjpeg-turbo, which must be installed separately on your system. libjpeg-turbo is licensed under a BSD-style license (BSD-3-Clause, IJG, and zlib components).
+
+**License Information:**
+- libjpeg-turbo: [BSD-3-Clause, IJG License, zlib License](https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/LICENSE.md)
+- **Note:** You are responsible for ensuring compliance with libjpeg-turbo's license terms when using the `turbojpeg` feature.
+
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+This crate is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+
+The `turbojpeg` feature provides optional bindings to libjpeg-turbo, which is licensed separately. See above for details.
 
 ## Contributing
 

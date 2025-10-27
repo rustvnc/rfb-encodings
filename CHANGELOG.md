@@ -5,6 +5,26 @@ All notable changes to rfb-encodings will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2025-10-27
+
+### Added
+
+- **Documentation**: Comprehensive TurboJPEG setup and licensing information
+  - Added TurboJPEG installation instructions for Ubuntu/Debian, macOS, and Windows in README
+  - Added "Third-Party Dependencies" section documenting libjpeg-turbo licensing
+  - Updated NOTICE file with complete libjpeg-turbo attribution including:
+    - BSD-3-Clause license for TurboJPEG API
+    - IJG License for libjpeg code
+    - zlib License for SIMD extensions
+    - Copyright notices for all contributors
+  - Added ZYWRLE algorithm acknowledgment to NOTICE file
+  - Clarified that libjpeg-turbo is NOT distributed with this crate and users are responsible for license compliance
+
+### Changed
+
+- Updated README to clearly separate installation instructions from licensing information
+- Improved License section to reference optional third-party dependencies
+
 ## [0.1.3] - 2025-10-23
 
 ### Fixed
