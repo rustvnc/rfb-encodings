@@ -46,7 +46,7 @@ use crate::{Encoding, PixelFormat};
 const TILE_SIZE: usize = 64;
 
 /// Calculates the number of bytes per input pixel based on the pixel format.
-/// This is determined by bits_per_pixel / 8.
+/// This is determined by `bits_per_pixel` / 8.
 #[inline]
 fn bytes_per_pixel(pf: &PixelFormat) -> usize {
     (pf.bits_per_pixel / 8) as usize
@@ -55,26 +55,26 @@ fn bytes_per_pixel(pf: &PixelFormat) -> usize {
 /// Calculates the CPIXEL size according to RFC 6143.
 ///
 /// CPIXEL is the same as PIXEL except when ALL of these conditions are met:
-/// - true_colour_flag is non-zero
-/// - bits_per_pixel is 32
+/// - `true_colour_flag` is non-zero
+/// - `bits_per_pixel` is 32
 /// - depth is 24 or less
 /// - all RGB bits fit in either the least significant 3 bytes or most significant 3 bytes
 ///
-/// When these conditions are met, CPIXEL is 3 bytes. Otherwise it equals bytes_per_pixel.
+/// When these conditions are met, CPIXEL is 3 bytes. Otherwise it equals `bytes_per_pixel`.
 #[inline]
 fn bytes_per_cpixel(pf: &PixelFormat) -> usize {
     if pf.true_colour_flag != 0 && pf.bits_per_pixel == 32 && pf.depth <= 24 {
         // Check if RGB fits in least significant 3 bytes (shifts 0-23)
         // fitsInLS3Bytes: (redMax << redShift) < (1<<24) for all colors
-        let fits_in_ls3_bytes = (u32::from(pf.red_max) << pf.red_shift) < (1 << 24)
+        let rgb_in_lower_bytes = (u32::from(pf.red_max) << pf.red_shift) < (1 << 24)
             && (u32::from(pf.green_max) << pf.green_shift) < (1 << 24)
             && (u32::from(pf.blue_max) << pf.blue_shift) < (1 << 24);
 
         // Check if RGB fits in most significant 3 bytes (shifts > 7)
         // fitsInMS3Bytes: all shifts > 7
-        let fits_in_ms3_bytes = pf.red_shift > 7 && pf.green_shift > 7 && pf.blue_shift > 7;
+        let rgb_in_upper_bytes = pf.red_shift > 7 && pf.green_shift > 7 && pf.blue_shift > 7;
 
-        if fits_in_ls3_bytes || fits_in_ms3_bytes {
+        if rgb_in_lower_bytes || rgb_in_upper_bytes {
             return 3;
         }
     }
@@ -117,20 +117,21 @@ fn read_pixel(data: &[u8], pf: &PixelFormat) -> u32 {
 /// for 3-byte CPIXEL output per RFC 6143.
 #[inline]
 fn use_cpixel_24a(pf: &PixelFormat) -> bool {
-    let fits_in_ls3_bytes = (u32::from(pf.red_max) << pf.red_shift) < (1 << 24)
+    let rgb_in_lower_bytes = (u32::from(pf.red_max) << pf.red_shift) < (1 << 24)
         && (u32::from(pf.green_max) << pf.green_shift) < (1 << 24)
         && (u32::from(pf.blue_max) << pf.blue_shift) < (1 << 24);
-    let fits_in_ms3_bytes = pf.red_shift > 7 && pf.green_shift > 7 && pf.blue_shift > 7;
+    let rgb_in_upper_bytes = pf.red_shift > 7 && pf.green_shift > 7 && pf.blue_shift > 7;
     let big_endian = pf.big_endian_flag != 0;
 
     // Use 24A when: (fitsInLS3Bytes && !bigEndian) || (fitsInMS3Bytes && bigEndian)
-    (fits_in_ls3_bytes && !big_endian) || (fits_in_ms3_bytes && big_endian)
+    (rgb_in_lower_bytes && !big_endian) || (rgb_in_upper_bytes && big_endian)
 }
 
 /// Writes a CPIXEL value to the buffer according to the pixel format.
 /// For 3-byte CPIXEL (depth <= 24, bpp=32), writes only the significant 3 bytes.
 /// Uses 24A format (bytes 0,1,2) or 24B format (bytes 1,2,3) based on pixel layout.
 #[inline]
+#[allow(clippy::cast_possible_truncation)]
 fn write_cpixel(buf: &mut BytesMut, pixel: u32, pf: &PixelFormat) {
     let cpixel_size = bytes_per_cpixel(pf);
     match cpixel_size {
@@ -213,7 +214,7 @@ fn analyze_runs_and_palette(pixels: &[u32]) -> (usize, usize, Vec<u32>) {
 /// Encodes a rectangle of pixel data using ZRLE with a persistent compressor.
 /// This maintains compression state across rectangles as required by RFC 6143.
 ///
-/// The input data should be in the client's pixel format (as negotiated via SetPixelFormat).
+/// The input data should be in the client's pixel format (as negotiated via `SetPixelFormat`).
 /// The encoder uses CPIXEL format for output as specified in RFC 6143.
 ///
 /// # Errors
@@ -299,7 +300,7 @@ pub fn encode_zrle_persistent(
 /// Encodes a rectangle of pixel data using the ZRLE encoding.
 /// This creates a new compressor for each rectangle (non-RFC compliant, deprecated).
 ///
-/// The input data should be in the client's pixel format (as negotiated via SetPixelFormat).
+/// The input data should be in the client's pixel format (as negotiated via `SetPixelFormat`).
 /// The encoder uses CPIXEL format for output as specified in RFC 6143.
 ///
 /// # Errors
@@ -438,7 +439,7 @@ fn encode_tile(
                 _ => 4, // 5-16 colors
             };
             // Per RFC 6143: each row is padded to byte boundary
-            let bytes_per_row = (width * bits_per_packed_pixel + 7) / 8;
+            let bytes_per_row = (width * bits_per_packed_pixel).div_ceil(8);
             let packed_bytes = cpixel_size * palette_size + bytes_per_row * height;
 
             if packed_bytes < estimated_bytes {
