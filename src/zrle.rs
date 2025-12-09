@@ -64,15 +64,18 @@ fn bytes_per_pixel(pf: &PixelFormat) -> usize {
 #[inline]
 fn bytes_per_cpixel(pf: &PixelFormat) -> usize {
     if pf.true_colour_flag != 0 && pf.bits_per_pixel == 32 && pf.depth <= 24 {
-        // Check if RGB fits in 3 bytes (either LSB or MSB)
-        let max_shift = pf.red_shift.max(pf.green_shift).max(pf.blue_shift);
-        let red_bits = (16 - pf.red_max.leading_zeros()) as u8;
-        let green_bits = (16 - pf.green_max.leading_zeros()) as u8;
-        let blue_bits = (16 - pf.blue_max.leading_zeros()) as u8;
-        let max_bit_used = max_shift + red_bits.max(green_bits).max(blue_bits);
+        // Check if RGB fits in least significant 3 bytes (shifts 0-23)
+        // fitsInLS3Bytes: (redMax << redShift) < (1<<24) for all colors
+        let fits_in_ls3_bytes = (u32::from(pf.red_max) << pf.red_shift) < (1 << 24)
+            && (u32::from(pf.green_max) << pf.green_shift) < (1 << 24)
+            && (u32::from(pf.blue_max) << pf.blue_shift) < (1 << 24);
 
-        // If all bits fit in 24 bits (3 bytes), use compact CPIXEL
-        if max_bit_used <= 24 {
+        // Check if RGB fits in most significant 3 bytes (shifts > 7)
+        // fitsInMS3Bytes: all shifts > 7
+        let fits_in_ms3_bytes =
+            pf.red_shift > 7 && pf.green_shift > 7 && pf.blue_shift > 7;
+
+        if fits_in_ls3_bytes || fits_in_ms3_bytes {
             return 3;
         }
     }
@@ -111,8 +114,23 @@ fn read_pixel(data: &[u8], pf: &PixelFormat) -> u32 {
     }
 }
 
+/// Determines if we should use 24A format (bytes 0,1,2) or 24B format (bytes 1,2,3)
+/// for 3-byte CPIXEL output per RFC 6143.
+#[inline]
+fn use_cpixel_24a(pf: &PixelFormat) -> bool {
+    let fits_in_ls3_bytes = (u32::from(pf.red_max) << pf.red_shift) < (1 << 24)
+        && (u32::from(pf.green_max) << pf.green_shift) < (1 << 24)
+        && (u32::from(pf.blue_max) << pf.blue_shift) < (1 << 24);
+    let fits_in_ms3_bytes = pf.red_shift > 7 && pf.green_shift > 7 && pf.blue_shift > 7;
+    let big_endian = pf.big_endian_flag != 0;
+
+    // Use 24A when: (fitsInLS3Bytes && !bigEndian) || (fitsInMS3Bytes && bigEndian)
+    (fits_in_ls3_bytes && !big_endian) || (fits_in_ms3_bytes && big_endian)
+}
+
 /// Writes a CPIXEL value to the buffer according to the pixel format.
 /// For 3-byte CPIXEL (depth <= 24, bpp=32), writes only the significant 3 bytes.
+/// Uses 24A format (bytes 0,1,2) or 24B format (bytes 1,2,3) based on pixel layout.
 #[inline]
 fn write_cpixel(buf: &mut BytesMut, pixel: u32, pf: &PixelFormat) {
     let cpixel_size = bytes_per_cpixel(pf);
@@ -126,15 +144,18 @@ fn write_cpixel(buf: &mut BytesMut, pixel: u32, pf: &PixelFormat) {
             }
         }
         3 => {
-            // 3-byte CPIXEL: write least significant 3 bytes in appropriate order
-            if pf.big_endian_flag != 0 {
-                buf.put_u8(((pixel >> 16) & 0xFF) as u8);
-                buf.put_u8(((pixel >> 8) & 0xFF) as u8);
-                buf.put_u8((pixel & 0xFF) as u8);
+            // 3-byte CPIXEL: determine which 3 bytes to write
+            let bytes = pixel.to_ne_bytes();
+            if use_cpixel_24a(pf) {
+                // 24A: write bytes 0, 1, 2 (LSB on little-endian machines)
+                buf.put_u8(bytes[0]);
+                buf.put_u8(bytes[1]);
+                buf.put_u8(bytes[2]);
             } else {
-                buf.put_u8((pixel & 0xFF) as u8);
-                buf.put_u8(((pixel >> 8) & 0xFF) as u8);
-                buf.put_u8(((pixel >> 16) & 0xFF) as u8);
+                // 24B: write bytes 1, 2, 3 (MSB on little-endian machines)
+                buf.put_u8(bytes[1]);
+                buf.put_u8(bytes[2]);
+                buf.put_u8(bytes[3]);
             }
         }
         4 => {
