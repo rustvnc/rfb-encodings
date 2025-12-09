@@ -72,8 +72,7 @@ fn bytes_per_cpixel(pf: &PixelFormat) -> usize {
 
         // Check if RGB fits in most significant 3 bytes (shifts > 7)
         // fitsInMS3Bytes: all shifts > 7
-        let fits_in_ms3_bytes =
-            pf.red_shift > 7 && pf.green_shift > 7 && pf.blue_shift > 7;
+        let fits_in_ms3_bytes = pf.red_shift > 7 && pf.green_shift > 7 && pf.blue_shift > 7;
 
         if fits_in_ls3_bytes || fits_in_ms3_bytes {
             return 3;
@@ -257,7 +256,13 @@ pub fn encode_zrle_persistent(
             let tile_data = extract_tile(data, width, x, y, tile_w, tile_h, bpp);
 
             // Analyze and encode the tile
-            encode_tile(&mut uncompressed_data, &tile_data, tile_w, tile_h, pixel_format);
+            encode_tile(
+                &mut uncompressed_data,
+                &tile_data,
+                tile_w,
+                tile_h,
+                pixel_format,
+            );
         }
     }
 
@@ -344,7 +349,13 @@ pub fn encode_zrle(
             let tile_data = extract_tile(data, width, x, y, tile_w, tile_h, bpp);
 
             // Analyze and encode the tile
-            encode_tile(&mut uncompressed_data, &tile_data, tile_w, tile_h, pixel_format);
+            encode_tile(
+                &mut uncompressed_data,
+                &tile_data,
+                tile_w,
+                tile_h,
+                pixel_format,
+            );
         }
     }
 
@@ -362,7 +373,13 @@ pub fn encode_zrle(
 /// Encodes a single tile, choosing the best sub-encoding.
 /// Handles variable pixel formats according to RFC 6143.
 #[allow(clippy::cast_possible_truncation)] // ZRLE palette indices and run lengths limited to u8 per RFC 6143
-fn encode_tile(buf: &mut BytesMut, tile_data: &[u8], width: usize, height: usize, pf: &PixelFormat) {
+fn encode_tile(
+    buf: &mut BytesMut,
+    tile_data: &[u8],
+    width: usize,
+    height: usize,
+    pf: &PixelFormat,
+) {
     let cpixel_size = bytes_per_cpixel(pf);
     let bpp = bytes_per_pixel(pf);
 
@@ -609,7 +626,7 @@ fn encode_packed_palette_rle_tile(
         } else {
             // RLE encoding for runs >= 2 per RFC 6143
             buf.put_u8(index | 128); // Set bit 7 to indicate RLE follows
-            // Encode run length - 1 using variable-length encoding
+                                     // Encode run length - 1 using variable-length encoding
             let mut remaining_len = run_len - 1;
             while remaining_len >= 255 {
                 buf.put_u8(255);
