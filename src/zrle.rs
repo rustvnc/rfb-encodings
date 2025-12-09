@@ -416,9 +416,9 @@ fn encode_tile(buf: &mut BytesMut, tile_data: &[u8], width: usize, height: usize
                 3..=4 => 2,
                 _ => 4, // 5-16 colors
             };
-            // Round up: (bits + 7) / 8 to match actual encoding
-            let packed_bytes =
-                cpixel_size * palette_size + (width * height * bits_per_packed_pixel).div_ceil(8);
+            // Per RFC 6143: each row is padded to byte boundary
+            let bytes_per_row = (width * bits_per_packed_pixel + 7) / 8;
+            let packed_bytes = cpixel_size * palette_size + bytes_per_row * height;
 
             if packed_bytes < estimated_bytes {
                 use_rle = false;
@@ -599,17 +599,13 @@ fn encode_packed_palette_rle_tile(
             run_len += 1;
         }
 
-        // Short runs (1-2 pixels) are written WITHOUT RLE marker per RFC 6143
-        if run_len <= 2 {
-            // Write index once for length 1, twice for length 2
-            if run_len == 2 {
-                buf.put_u8(index);
-            }
+        // Per RFC 6143: length 1 = index only, length 2+ = (index | 128) + length encoding
+        if run_len == 1 {
             buf.put_u8(index);
         } else {
-            // RLE encoding for runs >= 3 per RFC 6143
+            // RLE encoding for runs >= 2 per RFC 6143
             buf.put_u8(index | 128); // Set bit 7 to indicate RLE follows
-                                     // Encode run length - 1 using variable-length encoding
+            // Encode run length - 1 using variable-length encoding
             let mut remaining_len = run_len - 1;
             while remaining_len >= 255 {
                 buf.put_u8(255);
