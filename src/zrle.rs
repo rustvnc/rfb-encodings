@@ -144,15 +144,19 @@ fn write_cpixel(buf: &mut BytesMut, pixel: u32, pf: &PixelFormat) {
             }
         }
         3 => {
-            // 3-byte CPIXEL: determine which 3 bytes to write
-            let bytes = pixel.to_ne_bytes();
+            // 3-byte CPIXEL: output bytes in client's byte order
+            let bytes = if pf.big_endian_flag != 0 {
+                pixel.to_be_bytes()
+            } else {
+                pixel.to_le_bytes()
+            };
             if use_cpixel_24a(pf) {
-                // 24A: write bytes 0, 1, 2 (LSB on little-endian machines)
+                // 24A: write bytes 0, 1, 2
                 buf.put_u8(bytes[0]);
                 buf.put_u8(bytes[1]);
                 buf.put_u8(bytes[2]);
             } else {
-                // 24B: write bytes 1, 2, 3 (MSB on little-endian machines)
+                // 24B: write bytes 1, 2, 3
                 buf.put_u8(bytes[1]);
                 buf.put_u8(bytes[2]);
                 buf.put_u8(bytes[3]);
