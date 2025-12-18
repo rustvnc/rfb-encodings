@@ -45,6 +45,134 @@ use crate::{Encoding, PixelFormat};
 
 const TILE_SIZE: usize = 64;
 
+/// Calculates the number of bytes per input pixel based on the pixel format.
+/// This is determined by `bits_per_pixel` / 8.
+#[inline]
+fn bytes_per_pixel(pf: &PixelFormat) -> usize {
+    (pf.bits_per_pixel / 8) as usize
+}
+
+/// Calculates the CPIXEL size according to RFC 6143.
+///
+/// CPIXEL is the same as PIXEL except when ALL of these conditions are met:
+/// - `true_colour_flag` is non-zero
+/// - `bits_per_pixel` is 32
+/// - depth is 24 or less
+/// - all RGB bits fit in either the least significant 3 bytes or most significant 3 bytes
+///
+/// When these conditions are met, CPIXEL is 3 bytes. Otherwise it equals `bytes_per_pixel`.
+#[inline]
+fn bytes_per_cpixel(pf: &PixelFormat) -> usize {
+    if pf.true_colour_flag != 0 && pf.bits_per_pixel == 32 && pf.depth <= 24 {
+        // Check if RGB fits in least significant 3 bytes (shifts 0-23)
+        // fitsInLS3Bytes: (redMax << redShift) < (1<<24) for all colors
+        let rgb_in_lower_bytes = (u32::from(pf.red_max) << pf.red_shift) < (1 << 24)
+            && (u32::from(pf.green_max) << pf.green_shift) < (1 << 24)
+            && (u32::from(pf.blue_max) << pf.blue_shift) < (1 << 24);
+
+        // Check if RGB fits in most significant 3 bytes (shifts > 7)
+        // fitsInMS3Bytes: all shifts > 7
+        let rgb_in_upper_bytes = pf.red_shift > 7 && pf.green_shift > 7 && pf.blue_shift > 7;
+
+        if rgb_in_lower_bytes || rgb_in_upper_bytes {
+            return 3;
+        }
+    }
+    bytes_per_pixel(pf)
+}
+
+/// Extracts a pixel value from raw bytes according to the pixel format.
+/// Returns a u32 containing the pixel value (for internal processing).
+#[inline]
+fn read_pixel(data: &[u8], pf: &PixelFormat) -> u32 {
+    let bpp = bytes_per_pixel(pf);
+    match bpp {
+        1 => u32::from(data[0]),
+        2 => {
+            if pf.big_endian_flag != 0 {
+                u32::from(u16::from_be_bytes([data[0], data[1]]))
+            } else {
+                u32::from(u16::from_le_bytes([data[0], data[1]]))
+            }
+        }
+        4 => {
+            if pf.big_endian_flag != 0 {
+                u32::from_be_bytes([data[0], data[1], data[2], data[3]])
+            } else {
+                u32::from_le_bytes([data[0], data[1], data[2], data[3]])
+            }
+        }
+        _ => {
+            // Handle 3-byte case (24bpp)
+            if pf.big_endian_flag != 0 {
+                u32::from(data[0]) << 16 | u32::from(data[1]) << 8 | u32::from(data[2])
+            } else {
+                u32::from(data[0]) | u32::from(data[1]) << 8 | u32::from(data[2]) << 16
+            }
+        }
+    }
+}
+
+/// Determines if we should use 24A format (bytes 0,1,2) or 24B format (bytes 1,2,3)
+/// for 3-byte CPIXEL output per RFC 6143.
+#[inline]
+fn use_cpixel_24a(pf: &PixelFormat) -> bool {
+    let rgb_in_lower_bytes = (u32::from(pf.red_max) << pf.red_shift) < (1 << 24)
+        && (u32::from(pf.green_max) << pf.green_shift) < (1 << 24)
+        && (u32::from(pf.blue_max) << pf.blue_shift) < (1 << 24);
+    let rgb_in_upper_bytes = pf.red_shift > 7 && pf.green_shift > 7 && pf.blue_shift > 7;
+    let big_endian = pf.big_endian_flag != 0;
+
+    // Use 24A when: (fitsInLS3Bytes && !bigEndian) || (fitsInMS3Bytes && bigEndian)
+    (rgb_in_lower_bytes && !big_endian) || (rgb_in_upper_bytes && big_endian)
+}
+
+/// Writes a CPIXEL value to the buffer according to the pixel format.
+/// For 3-byte CPIXEL (depth <= 24, bpp=32), writes only the significant 3 bytes.
+/// Uses 24A format (bytes 0,1,2) or 24B format (bytes 1,2,3) based on pixel layout.
+#[inline]
+#[allow(clippy::cast_possible_truncation)]
+fn write_cpixel(buf: &mut BytesMut, pixel: u32, pf: &PixelFormat) {
+    let cpixel_size = bytes_per_cpixel(pf);
+    match cpixel_size {
+        1 => buf.put_u8(pixel as u8),
+        2 => {
+            if pf.big_endian_flag != 0 {
+                buf.put_u16(pixel as u16);
+            } else {
+                buf.put_u16_le(pixel as u16);
+            }
+        }
+        3 => {
+            // 3-byte CPIXEL: output bytes in client's byte order
+            let bytes = if pf.big_endian_flag != 0 {
+                pixel.to_be_bytes()
+            } else {
+                pixel.to_le_bytes()
+            };
+            if use_cpixel_24a(pf) {
+                // 24A: write bytes 0, 1, 2
+                buf.put_u8(bytes[0]);
+                buf.put_u8(bytes[1]);
+                buf.put_u8(bytes[2]);
+            } else {
+                // 24B: write bytes 1, 2, 3
+                buf.put_u8(bytes[1]);
+                buf.put_u8(bytes[2]);
+                buf.put_u8(bytes[3]);
+            }
+        }
+        4 => {
+            if pf.big_endian_flag != 0 {
+                buf.put_u32(pixel);
+            } else {
+                buf.put_u32_le(pixel);
+            }
+        }
+        _ => unreachable!("Invalid CPIXEL size"),
+    }
+}
+
 /// Analyzes pixel data to count RLE runs, single pixels, and unique colors.
 /// Returns: (runs, `single_pixels`, `palette_vec`)
 /// CRITICAL: The palette Vec must preserve insertion order (order colors first appear)
@@ -86,20 +214,38 @@ fn analyze_runs_and_palette(pixels: &[u32]) -> (usize, usize, Vec<u32>) {
 /// Encodes a rectangle of pixel data using ZRLE with a persistent compressor.
 /// This maintains compression state across rectangles as required by RFC 6143.
 ///
+/// The input data should be in the client's pixel format (as negotiated via `SetPixelFormat`).
+/// The encoder uses CPIXEL format for output as specified in RFC 6143.
+///
 /// # Errors
 ///
-/// Returns an error if zlib compression fails
+/// Returns an error if zlib compression fails or if the input buffer is too small
 #[allow(dead_code)]
 #[allow(clippy::cast_possible_truncation)] // ZRLE protocol requires u8/u16/u32 packing of pixel data
 pub fn encode_zrle_persistent(
     data: &[u8],
     width: u16,
     height: u16,
-    _pixel_format: &PixelFormat,
+    pixel_format: &PixelFormat,
     compressor: &mut Compress,
 ) -> std::io::Result<Vec<u8>> {
     let width = width as usize;
     let height = height as usize;
+    let bpp = bytes_per_pixel(pixel_format);
+    let expected_size = width * height * bpp;
+    if data.len() < expected_size {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "ZRLE: input buffer size mismatch: got {} bytes, expected {} bytes for {}x{} image ({} bytes per pixel)",
+                data.len(),
+                expected_size,
+                width,
+                height,
+                bpp
+            ),
+        ));
+    }
     let mut uncompressed_data = BytesMut::new();
 
     for y in (0..height).step_by(TILE_SIZE) {
@@ -108,10 +254,16 @@ pub fn encode_zrle_persistent(
             let tile_h = (height - y).min(TILE_SIZE);
 
             // Extract tile pixel data
-            let tile_data = extract_tile(data, width, x, y, tile_w, tile_h);
+            let tile_data = extract_tile(data, width, x, y, tile_w, tile_h, bpp);
 
             // Analyze and encode the tile
-            encode_tile(&mut uncompressed_data, &tile_data, tile_w, tile_h);
+            encode_tile(
+                &mut uncompressed_data,
+                &tile_data,
+                tile_w,
+                tile_h,
+                pixel_format,
+            );
         }
     }
 
@@ -148,17 +300,38 @@ pub fn encode_zrle_persistent(
 /// Encodes a rectangle of pixel data using the ZRLE encoding.
 /// This creates a new compressor for each rectangle (non-RFC compliant, deprecated).
 ///
+/// The input data should be in the client's pixel format (as negotiated via `SetPixelFormat`).
+/// The encoder uses CPIXEL format for output as specified in RFC 6143.
+///
 /// # Errors
 ///
-/// Returns an error if zlib compression fails
+/// Returns an error if zlib compression fails or if the input buffer is too small
 #[allow(clippy::cast_possible_truncation)] // ZRLE protocol requires u8/u16/u32 packing of pixel data
 pub fn encode_zrle(
     data: &[u8],
     width: u16,
     height: u16,
-    _pixel_format: &PixelFormat, // Assuming RGBA32
+    pixel_format: &PixelFormat,
     compression: u8,
 ) -> std::io::Result<Vec<u8>> {
+    let width = width as usize;
+    let height = height as usize;
+    let bpp = bytes_per_pixel(pixel_format);
+    let expected_size = width * height * bpp;
+    if data.len() < expected_size {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "ZRLE: input buffer size mismatch: got {} bytes, expected {} bytes for {}x{} image ({} bytes per pixel)",
+                data.len(),
+                expected_size,
+                width,
+                height,
+                bpp
+            ),
+        ));
+    }
+
     let compression_level = match compression {
         0 => Compression::fast(),
         1..=3 => Compression::new(u32::from(compression)),
@@ -168,19 +341,22 @@ pub fn encode_zrle(
     let mut zlib_encoder = ZlibEncoder::new(Vec::new(), compression_level);
     let mut uncompressed_data = BytesMut::new();
 
-    let width = width as usize;
-    let height = height as usize;
-
     for y in (0..height).step_by(TILE_SIZE) {
         for x in (0..width).step_by(TILE_SIZE) {
             let tile_w = (width - x).min(TILE_SIZE);
             let tile_h = (height - y).min(TILE_SIZE);
 
             // Extract tile pixel data
-            let tile_data = extract_tile(data, width, x, y, tile_w, tile_h);
+            let tile_data = extract_tile(data, width, x, y, tile_w, tile_h, bpp);
 
             // Analyze and encode the tile
-            encode_tile(&mut uncompressed_data, &tile_data, tile_w, tile_h);
+            encode_tile(
+                &mut uncompressed_data,
+                &tile_data,
+                tile_w,
+                tile_h,
+                pixel_format,
+            );
         }
     }
 
@@ -196,43 +372,47 @@ pub fn encode_zrle(
 }
 
 /// Encodes a single tile, choosing the best sub-encoding.
-/// Optimized to minimize allocations by working directly with RGBA data where possible.
+/// Handles variable pixel formats according to RFC 6143.
 #[allow(clippy::cast_possible_truncation)] // ZRLE palette indices and run lengths limited to u8 per RFC 6143
-fn encode_tile(buf: &mut BytesMut, tile_data: &[u8], width: usize, height: usize) {
-    const CPIXEL_SIZE: usize = 3; // CPIXEL is 3 bytes for depth=24
+fn encode_tile(
+    buf: &mut BytesMut,
+    tile_data: &[u8],
+    width: usize,
+    height: usize,
+    pf: &PixelFormat,
+) {
+    let cpixel_size = bytes_per_cpixel(pf);
+    let bpp = bytes_per_pixel(pf);
 
-    // Quick check for solid color by scanning RGBA data directly (avoid allocation)
-    if tile_data.len() >= 4 {
-        let first_r = tile_data[0];
-        let first_g = tile_data[1];
-        let first_b = tile_data[2];
+    // Quick check for solid color by scanning pixel data directly (avoid allocation)
+    if tile_data.len() >= bpp {
+        let first_pixel = read_pixel(&tile_data[0..bpp], pf);
         let mut is_solid = true;
 
-        for chunk in tile_data.chunks_exact(4).skip(1) {
-            if chunk[0] != first_r || chunk[1] != first_g || chunk[2] != first_b {
+        for chunk in tile_data.chunks_exact(bpp).skip(1) {
+            if read_pixel(chunk, pf) != first_pixel {
                 is_solid = false;
                 break;
             }
         }
 
         if is_solid {
-            let color = u32::from(first_r) | (u32::from(first_g) << 8) | (u32::from(first_b) << 16);
-            encode_solid_color_tile(buf, color);
+            encode_solid_color_tile(buf, first_pixel, pf);
             return;
         }
     }
 
-    // Convert RGBA to RGB24 pixels (still needed for analysis)
-    let pixels = rgba_to_rgb24_pixels(tile_data);
+    // Convert to u32 pixels for analysis
+    let pixels = pixels_to_u32(tile_data, pf);
     let (runs, single_pixels, palette) = analyze_runs_and_palette(&pixels);
 
     let mut use_rle = false;
     let mut use_palette = false;
 
     // Start assuming raw encoding size
-    let mut estimated_bytes = width * height * CPIXEL_SIZE;
+    let mut estimated_bytes = width * height * cpixel_size;
 
-    let plain_rle_bytes = (CPIXEL_SIZE + 1) * (runs + single_pixels);
+    let plain_rle_bytes = (cpixel_size + 1) * (runs + single_pixels);
 
     if plain_rle_bytes < estimated_bytes {
         use_rle = true;
@@ -243,7 +423,7 @@ fn encode_tile(buf: &mut BytesMut, tile_data: &[u8], width: usize, height: usize
         let palette_size = palette.len();
 
         // Palette RLE encoding
-        let palette_rle_bytes = CPIXEL_SIZE * palette_size + 2 * runs + single_pixels;
+        let palette_rle_bytes = cpixel_size * palette_size + 2 * runs + single_pixels;
 
         if palette_rle_bytes < estimated_bytes {
             use_rle = true;
@@ -258,9 +438,9 @@ fn encode_tile(buf: &mut BytesMut, tile_data: &[u8], width: usize, height: usize
                 3..=4 => 2,
                 _ => 4, // 5-16 colors
             };
-            // Round up: (bits + 7) / 8 to match actual encoding
-            let packed_bytes =
-                CPIXEL_SIZE * palette_size + (width * height * bits_per_packed_pixel).div_ceil(8);
+            // Per RFC 6143: each row is padded to byte boundary
+            let bytes_per_row = (width * bits_per_packed_pixel).div_ceil(8);
+            let packed_bytes = cpixel_size * palette_size + bytes_per_row * height;
 
             if packed_bytes < estimated_bytes {
                 use_rle = false;
@@ -281,26 +461,33 @@ fn encode_tile(buf: &mut BytesMut, tile_data: &[u8], width: usize, height: usize
 
         if use_rle {
             // Packed Palette RLE
-            encode_packed_palette_rle_tile(buf, &pixels, &palette, &color_to_idx);
+            encode_packed_palette_rle_tile(buf, &pixels, &palette, &color_to_idx, pf);
         } else {
             // Packed Palette (no RLE)
-            encode_packed_palette_tile(buf, &pixels, width, height, &palette, &color_to_idx);
+            encode_packed_palette_tile(buf, &pixels, width, height, &palette, &color_to_idx, pf);
         }
     } else {
         // Raw or Plain RLE
         if use_rle {
             // Plain RLE - encode directly to buffer (avoid intermediate Vec)
             buf.put_u8(128);
-            encode_rle_to_buf(buf, &pixels);
+            encode_rle_to_buf(buf, &pixels, pf);
         } else {
             // Raw
-            encode_raw_tile(buf, tile_data);
+            encode_raw_tile(buf, &pixels, pf);
         }
     }
 }
 
 /// Extracts a tile from the full framebuffer.
 /// Optimized to use a single allocation and bulk copy operations.
+///
+/// # Arguments
+/// * `full_frame` - The complete framebuffer data
+/// * `frame_width` - Width of the framebuffer in pixels
+/// * `x`, `y` - Top-left corner of the tile in the framebuffer
+/// * `width`, `height` - Dimensions of the tile in pixels
+/// * `bpp` - Bytes per pixel
 #[allow(clippy::uninit_vec)] // Performance optimization: all bytes written via bulk copy before return
 fn extract_tile(
     full_frame: &[u8],
@@ -309,8 +496,9 @@ fn extract_tile(
     y: usize,
     width: usize,
     height: usize,
+    bpp: usize,
 ) -> Vec<u8> {
-    let tile_size = width * height * 4;
+    let tile_size = width * height * bpp;
     let mut tile_data = Vec::with_capacity(tile_size);
 
     // Use unsafe for performance - we know the capacity is correct
@@ -318,9 +506,9 @@ fn extract_tile(
         tile_data.set_len(tile_size);
     }
 
-    let row_bytes = width * 4;
+    let row_bytes = width * bpp;
     for row in 0..height {
-        let src_start = ((y + row) * frame_width + x) * 4;
+        let src_start = ((y + row) * frame_width + x) * bpp;
         let dst_start = row * row_bytes;
         tile_data[dst_start..dst_start + row_bytes]
             .copy_from_slice(&full_frame[src_start..src_start + row_bytes]);
@@ -328,35 +516,26 @@ fn extract_tile(
     tile_data
 }
 
-/// Converts RGBA to 32-bit RGB pixels (0x00BBGGRR format for VNC).
-fn rgba_to_rgb24_pixels(data: &[u8]) -> Vec<u32> {
-    data.chunks_exact(4)
-        .map(|c| u32::from(c[0]) | (u32::from(c[1]) << 8) | (u32::from(c[2]) << 16))
+/// Converts pixel data to u32 values for internal processing.
+/// Works with any pixel format by using the pixel format's bytes per pixel.
+fn pixels_to_u32(data: &[u8], pf: &PixelFormat) -> Vec<u32> {
+    let bpp = bytes_per_pixel(pf);
+    data.chunks_exact(bpp)
+        .map(|chunk| read_pixel(chunk, pf))
         .collect()
 }
 
-/// Writes a CPIXEL (3 bytes for depth=24) in little-endian format.
-/// CPIXEL format: R at byte 0, G at byte 1, B at byte 2
-fn put_cpixel(buf: &mut BytesMut, pixel: u32) {
-    buf.put_u8((pixel & 0xFF) as u8); // R at bits 0-7
-    buf.put_u8(((pixel >> 8) & 0xFF) as u8); // G at bits 8-15
-    buf.put_u8(((pixel >> 16) & 0xFF) as u8); // B at bits 16-23
-}
-
 /// Sub-encoding for a tile with a single color.
-fn encode_solid_color_tile(buf: &mut BytesMut, color: u32) {
+fn encode_solid_color_tile(buf: &mut BytesMut, color: u32, pf: &PixelFormat) {
     buf.put_u8(1); // Solid color sub-encoding
-    put_cpixel(buf, color); // Write 3-byte CPIXEL
+    write_cpixel(buf, color, pf);
 }
 
 /// Sub-encoding for raw pixel data.
-fn encode_raw_tile(buf: &mut BytesMut, tile_data: &[u8]) {
+fn encode_raw_tile(buf: &mut BytesMut, pixels: &[u32], pf: &PixelFormat) {
     buf.put_u8(0); // Raw sub-encoding
-                   // Convert RGBA (4 bytes) to CPIXEL (3 bytes) for each pixel
-    for chunk in tile_data.chunks_exact(4) {
-        buf.put_u8(chunk[0]); // R
-        buf.put_u8(chunk[1]); // G
-        buf.put_u8(chunk[2]); // B (skip alpha channel)
+    for &pixel in pixels {
+        write_cpixel(buf, pixel, pf);
     }
 }
 
@@ -369,6 +548,7 @@ fn encode_packed_palette_tile(
     height: usize,
     palette: &[u32],
     color_to_idx: &HashMap<u32, u8>,
+    pf: &PixelFormat,
 ) {
     let palette_size = palette.len();
     let bits_per_pixel = match palette_size {
@@ -379,9 +559,9 @@ fn encode_packed_palette_tile(
 
     buf.put_u8(palette_size as u8); // Packed palette sub-encoding
 
-    // Write palette as CPIXEL (3 bytes each) - in insertion order
+    // Write palette as CPIXEL - in insertion order
     for &color in palette {
-        put_cpixel(buf, color);
+        write_cpixel(buf, color, pf);
     }
 
     // Write packed pixel data ROW BY ROW per RFC 6143 ZRLE specification
@@ -420,13 +600,14 @@ fn encode_packed_palette_rle_tile(
     pixels: &[u32],
     palette: &[u32],
     color_to_idx: &HashMap<u32, u8>,
+    pf: &PixelFormat,
 ) {
     let palette_size = palette.len();
     buf.put_u8(128 | (palette_size as u8)); // Packed palette RLE sub-encoding
 
-    // Write palette as CPIXEL (3 bytes each)
+    // Write palette as CPIXEL
     for &color in palette {
-        put_cpixel(buf, color);
+        write_cpixel(buf, color, pf);
     }
 
     // Write RLE data using palette indices per RFC 6143 specification
@@ -440,15 +621,11 @@ fn encode_packed_palette_rle_tile(
             run_len += 1;
         }
 
-        // Short runs (1-2 pixels) are written WITHOUT RLE marker per RFC 6143
-        if run_len <= 2 {
-            // Write index once for length 1, twice for length 2
-            if run_len == 2 {
-                buf.put_u8(index);
-            }
+        // Per RFC 6143: length 1 = index only, length 2+ = (index | 128) + length encoding
+        if run_len == 1 {
             buf.put_u8(index);
         } else {
-            // RLE encoding for runs >= 3 per RFC 6143
+            // RLE encoding for runs >= 2 per RFC 6143
             buf.put_u8(index | 128); // Set bit 7 to indicate RLE follows
                                      // Encode run length - 1 using variable-length encoding
             let mut remaining_len = run_len - 1;
@@ -464,7 +641,7 @@ fn encode_packed_palette_rle_tile(
 
 /// Encodes pixel data using run-length encoding directly to buffer (optimized).
 #[allow(clippy::cast_possible_truncation)] // ZRLE run lengths encoded as u8 per RFC 6143
-fn encode_rle_to_buf(buf: &mut BytesMut, pixels: &[u32]) {
+fn encode_rle_to_buf(buf: &mut BytesMut, pixels: &[u32], pf: &PixelFormat) {
     let mut i = 0;
     while i < pixels.len() {
         let color = pixels[i];
@@ -472,8 +649,8 @@ fn encode_rle_to_buf(buf: &mut BytesMut, pixels: &[u32]) {
         while i + run_len < pixels.len() && pixels[i + run_len] == color {
             run_len += 1;
         }
-        // Write CPIXEL (3 bytes)
-        put_cpixel(buf, color);
+        // Write CPIXEL
+        write_cpixel(buf, color, pf);
 
         // Encode run length - 1 per RFC 6143 ZRLE specification
         // Length encoding: write 255 for each full 255-length chunk, then remainder
@@ -516,5 +693,66 @@ impl Encoding for ZrleEncoding {
             }
             buf
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PixelFormat;
+
+    /// Test that reproduces the GitHub issue #1 buffer overflow.
+    /// Dimensions not multiples of 64 caused panic in `extract_tile`.
+    #[test]
+    fn test_zrle_non_multiple_of_64_dimensions() {
+        // 800x600 - not multiples of 64, similar to the reported bug
+        let width: u16 = 800;
+        let height: u16 = 600;
+        let pf = PixelFormat::rgba32();
+        let bpp = 4; // 32-bit RGBA
+
+        // Create test framebuffer
+        let data = vec![0u8; (width as usize) * (height as usize) * bpp];
+
+        // This would panic before the fix with:
+        // "range end index X out of range for slice of length Y"
+        let result = encode_zrle(&data, width, height, &pf, 6);
+        assert!(
+            result.is_ok(),
+            "encode_zrle should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    /// Test with the exact dimensions from the original bug report (960x540)
+    #[test]
+    fn test_zrle_960x540_original_bug() {
+        let width: u16 = 960;
+        let height: u16 = 540;
+        let pf = PixelFormat::rgba32();
+        let bpp = 4;
+
+        let data = vec![128u8; (width as usize) * (height as usize) * bpp];
+
+        let result = encode_zrle(&data, width, height, &pf, 6);
+        assert!(
+            result.is_ok(),
+            "encode_zrle should succeed for 960x540: {:?}",
+            result.err()
+        );
+    }
+
+    /// Test buffer size validation - should return error, not panic
+    #[test]
+    fn test_zrle_buffer_too_small() {
+        let width: u16 = 100;
+        let height: u16 = 100;
+        let pf = PixelFormat::rgba32();
+
+        // Buffer is too small (should be 100*100*4 = 40000 bytes)
+        let data = vec![0u8; 1000];
+
+        let result = encode_zrle(&data, width, height, &pf, 6);
+        assert!(result.is_err(), "Should return error for undersized buffer");
     }
 }

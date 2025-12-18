@@ -277,7 +277,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "rfb-encodings"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "bytes",
  "env_logger",

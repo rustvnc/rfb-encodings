@@ -5,6 +5,40 @@ All notable changes to rfb-encodings will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2025-12-17
+
+### Added
+
+- **Comprehensive Test Suite**: Added 44 automated tests covering all 10 encodings
+  - **Golden tests**: Compare encoder output against generated reference files
+  - **Round-trip tests**: Encode data, decode with test decoders, verify RGB components match
+  - **Smoke tests**: Verify non-deterministic encodings run without error
+  - Test decoders for Raw, Zlib, and ZRLE with full CPIXEL and endian support
+  - Per-OS golden file generation (`tests/expected/{linux,macos,windows}/`)
+  - Test fixture generator binary (`generate_fixture`)
+
+- **ZRLE Bug Fix Tests**: Added specific tests for the buffer overflow bug fix
+  - `test_zrle_960x540_original_bug`: Tests the exact dimensions that caused the original panic
+  - `test_zrle_non_multiple_of_64_dimensions`: Tests non-aligned dimensions
+  - `roundtrip_zrle_full_100x75`: Round-trip test with non-aligned dimensions
+
+- **Feature Flag**: Added `generate-golden` feature for regenerating golden test files
+
+### Changed
+
+- **README**: Updated Testing Status column to reflect comprehensive test coverage
+  - All 10 encodings now show test type (Golden, Round-trip, or Smoke)
+  - Added new "Testing" section with test commands and coverage details
+  - Removed "Untested encodings" note as all encodings are now tested
+
+### Fixed
+
+- **ZRLE Encoding**: Fixed buffer overflow on non-standard dimensions (issue #1)
+  - Root cause: Hardcoded `bytes_per_pixel = 4` instead of using `PixelFormat::bytes_per_pixel()`
+  - Fixed CPIXEL size calculation per RFC 6143
+  - Fixed input buffer validation to use correct bytes per pixel
+  - Added `bpp` parameter to `extract_tile` function
+
 ## [0.1.5] - 2025-10-27
 
 ### Added
