@@ -1,6 +1,6 @@
 [package]
 name = "rfb-encodings"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 rust-version = "1.90"
 authors = ["Dustin McAfee"]
@@ -21,6 +21,11 @@ log = { version = "0.4", optional = true }  # Optional logging for encoding oper
 default = []
 turbojpeg = []          # Enable TurboJPEG for Tight encoding (requires libjpeg-turbo)
 debug-logging = ["log"] # Enable verbose debug logging
+generate-golden = []    # Generate golden test outputs instead of comparing
+
+[[bin]]
+name = "generate_fixture"
+path = "src/bin/generate_fixture.rs"
 
 [dev-dependencies]
 env_logger = "0.11"

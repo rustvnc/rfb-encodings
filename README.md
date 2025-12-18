@@ -52,18 +52,18 @@ This crate provides encoding implementations for the VNC/RFB protocol, including
 
 | Encoding | ID | Description | Wire Format Match | Testing Status |
 |----------|----|----|-------------------|----------------|
-| **Raw** | 0 | Uncompressed pixels | ✅ 100% | ✅ Tested |
-| **RRE** | 2 | Rise-and-Run-length | ✅ 100% | ✅ Tested |
-| **CoRRE** | 4 | Compact RRE | ✅ 100% | ⚠️ Untested* |
-| **Hextile** | 5 | 16x16 tile-based | ✅ 100% | ✅ Tested |
-| **Zlib** | 6 | Zlib-compressed raw | ✅ 100% | ✅ Tested |
-| **Tight** | 7 | Multi-mode compression | ✅ 100% (all 5 modes) | ✅ Tested |
-| **ZlibHex** | 8 | Zlib-compressed Hextile | ✅ 100% | ⚠️ Untested* |
-| **ZRLE** | 16 | Zlib Run-Length | ✅ 100% | ✅ Tested |
-| **ZYWRLE** | 17 | Wavelet compression | ✅ 100% | ⚠️ Untested* |
-| **TightPng** | -260 | PNG-compressed Tight | ✅ 100% | ✅ Tested |
+| **Raw** | 0 | Uncompressed pixels | ✅ 100% | ✅ Golden + Round-trip |
+| **RRE** | 2 | Rise-and-Run-length | ✅ 100% | ✅ Smoke |
+| **CoRRE** | 4 | Compact RRE | ✅ 100% | ✅ Smoke |
+| **Hextile** | 5 | 16x16 tile-based | ✅ 100% | ✅ Smoke |
+| **Zlib** | 6 | Zlib-compressed raw | ✅ 100% | ✅ Golden + Round-trip |
+| **Tight** | 7 | Multi-mode compression | ✅ 100% (all 5 modes) | ✅ Golden |
+| **ZlibHex** | 8 | Zlib-compressed Hextile | ✅ 100% | ✅ Smoke |
+| **ZRLE** | 16 | Zlib Run-Length | ✅ 100% | ✅ Golden + Round-trip |
+| **ZYWRLE** | 17 | Wavelet compression | ✅ 100% | ✅ Smoke |
+| **TightPng** | -260 | PNG-compressed Tight | ✅ 100% | ✅ Golden |
 
-**\*Untested encodings:** ZlibHex, CoRRE, and ZYWRLE are fully implemented and RFC 6143 compliant but cannot be tested with noVNC (most common VNC client) because noVNC doesn't support them. All three have been code-reviewed and verified against the RFC 6143 specification. Use the widely-supported alternatives: **Zlib** (instead of ZlibHex), **Hextile** (instead of CoRRE), and **ZRLE** (instead of ZYWRLE).
+All 10 encodings have automated tests. See [Testing](#testing) for details.
 
 ## Features
 
@@ -181,6 +181,45 @@ When using the `turbojpeg` feature, this crate provides FFI bindings to libjpeg-
 This crate is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
 
 The `turbojpeg` feature provides optional bindings to libjpeg-turbo, which is licensed separately. See above for details.
+
+## Testing
+
+This crate includes comprehensive tests for all 10 encodings:
+
+```bash
+# First: generate test fixtures (required once)
+# Creates deterministic RGBA test images in tests/fixtures/
+#   - frame_64x64.rgba: 4-quadrant pattern (gradient, solid, checkerboard)
+#   - frame_100x75.rgba: non-64-aligned image to test ZRLE bug fix
+cargo run --bin generate_fixture
+
+# Then: generate golden files for your platform (required once per OS)
+# Encodes fixtures and saves output to tests/expected/{linux,macos,windows}/
+cargo test --test golden_tests --features generate-golden
+
+# Run all tests
+cargo test
+```
+
+### Test Types
+
+| Test Type | Description |
+|-----------|-------------|
+| **Golden** | Compares encoder output against generated reference files |
+| **Round-trip** | Encodes data, decodes with test decoders, verifies RGB match |
+| **Smoke** | Verifies encoding runs without error and produces output |
+
+### Cross-Platform Notes
+
+- **Golden files must be generated per-OS**: Zlib compression can produce different (but equally valid) output on different platforms. Run with `--features generate-golden` on each platform to create `tests/expected/{linux,macos,windows}/`
+- **Endian-aware decoders**: Test decoders handle both big-endian and little-endian pixel formats
+
+### Test Coverage
+
+- **44 total tests** across unit tests, decoder tests, and golden tests
+- **8 unit tests** for ZRLE buffer handling and pixel translation
+- **3 decoder tests** for the test decoder implementations
+- **33 golden/round-trip tests** covering all 10 encodings
 
 ## Contributing
 

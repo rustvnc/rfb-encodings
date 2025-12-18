@@ -695,3 +695,64 @@ impl Encoding for ZrleEncoding {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PixelFormat;
+
+    /// Test that reproduces the GitHub issue #1 buffer overflow.
+    /// Dimensions not multiples of 64 caused panic in `extract_tile`.
+    #[test]
+    fn test_zrle_non_multiple_of_64_dimensions() {
+        // 800x600 - not multiples of 64, similar to the reported bug
+        let width: u16 = 800;
+        let height: u16 = 600;
+        let pf = PixelFormat::rgba32();
+        let bpp = 4; // 32-bit RGBA
+
+        // Create test framebuffer
+        let data = vec![0u8; (width as usize) * (height as usize) * bpp];
+
+        // This would panic before the fix with:
+        // "range end index X out of range for slice of length Y"
+        let result = encode_zrle(&data, width, height, &pf, 6);
+        assert!(
+            result.is_ok(),
+            "encode_zrle should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    /// Test with the exact dimensions from the original bug report (960x540)
+    #[test]
+    fn test_zrle_960x540_original_bug() {
+        let width: u16 = 960;
+        let height: u16 = 540;
+        let pf = PixelFormat::rgba32();
+        let bpp = 4;
+
+        let data = vec![128u8; (width as usize) * (height as usize) * bpp];
+
+        let result = encode_zrle(&data, width, height, &pf, 6);
+        assert!(
+            result.is_ok(),
+            "encode_zrle should succeed for 960x540: {:?}",
+            result.err()
+        );
+    }
+
+    /// Test buffer size validation - should return error, not panic
+    #[test]
+    fn test_zrle_buffer_too_small() {
+        let width: u16 = 100;
+        let height: u16 = 100;
+        let pf = PixelFormat::rgba32();
+
+        // Buffer is too small (should be 100*100*4 = 40000 bytes)
+        let data = vec![0u8; 1000];
+
+        let result = encode_zrle(&data, width, height, &pf, 6);
+        assert!(result.is_err(), "Should return error for undersized buffer");
+    }
+}
