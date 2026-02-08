@@ -359,7 +359,7 @@ fn encode_rect_optimized<C: TightStreamCompressor>(
                 );
 
                 // Check if solid area is large enough
-                if w_best * h_best != rect.w * remaining_h
+                if (w_best as usize * h_best as usize) != (rect.w as usize * remaining_h as usize)
                     && (w_best as usize * h_best as usize) < MIN_SOLID_SUBRECT_SIZE
                 {
                     current_x += dw;
